@@ -1,0 +1,5 @@
+skills/
+└── ai_news_tracker/
+    ├── SKILL.md
+    └── scripts/
+        └── fetch_rss.py
