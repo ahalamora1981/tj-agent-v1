@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-from typing import Any, Optional, AsyncIterator
+from typing import Any, Optional, AsyncIterator, Callable
 from loguru import logger
 
 from ..models import AgentState, AgentConfig, Message, ToolCall, ToolResult, TOOL_REGISTRY
 from ..tools.executor import ToolExecutor
 from .llm_client import LLMClient, LLMClientManager
+
+
+def default_stream_callback(chunk: str) -> None:
+    """Default callback that prints chunk to stdout."""
+    print(chunk, end="", flush=True)
 
 
 class ReActLoop:
@@ -23,15 +28,18 @@ class ReActLoop:
         self,
         state: AgentState,
         llm_client: LLMClient,
-        tool_executor: ToolExecutor
+        tool_executor: ToolExecutor,
+        stream_callback: Any = None
     ) -> None:
         self.state = state
         self.llm = llm_client
         self.executor = tool_executor
+        self.stream_callback = stream_callback
     
     async def run(self, user_input: str) -> str:
         """
         Run the ReAct loop until completion.
+        Uses streaming internally for better UX.
         
         Args:
             user_input: Initial user message
@@ -44,11 +52,13 @@ class ReActLoop:
         
         logger.info(f"Starting ReAct loop for session: {self.state.config.session_id}")
         
+        full_response = ""
+        
         while not self.state.is_complete and self.state.iteration_count < self.state.config.max_iterations:
             self.state.iteration_count += 1
             logger.debug(f"Iteration {self.state.iteration_count}")
             
-            response = await self._step()
+            response = await self._step_streaming()
             
             if self.state.is_complete:
                 break
@@ -57,16 +67,63 @@ class ReActLoop:
                 logger.warning("LLM returned no response, ending loop")
                 self.state.last_error = "No response from LLM"
                 break
+            
+            full_response = response
         
         if self.state.iteration_count >= self.state.config.max_iterations:
             self.state.last_error = f"Max iterations ({self.state.config.max_iterations}) reached"
         
-        final_message = next(
-            (m for m in reversed(self.state.messages) if m.role == "assistant" and m.content),
-            None
-        )
+        if not full_response:
+            final_message = next(
+                (m for m in reversed(self.state.messages) if m.role == "assistant" and m.content),
+                None
+            )
+            full_response = (final_message.content or "[No response]") if final_message else "[No response]"
         
-        return (final_message.content or "[No response]") if final_message else "[No response]"
+        return full_response
+    
+    async def _step_streaming(self) -> Optional[str]:
+        """
+        Execute one step of the ReAct loop with streaming.
+        
+        Returns:
+            Full assistant response content or None
+        """
+        messages = self.state.get_context_messages()
+        
+        tool_definitions = self._get_tool_definitions()
+        
+        logger.info(f"Calling LLM with {len(messages)} messages, {len(tool_definitions)} tools")
+        
+        try:
+            content_buffer = ""
+            async for chunk in self.llm.chat_stream(
+                messages=messages,
+                model=self.state.config.model,
+                temperature=self.state.config.temperature,
+                tools=tool_definitions if tool_definitions else None
+            ):
+                content_buffer += chunk
+                if self.stream_callback:
+                    self.stream_callback(chunk)
+            
+            logger.info(f"LLM response received, length: {len(content_buffer)}")
+            
+        except Exception as e:
+            logger.exception("LLM API call failed")
+            self.state.last_error = str(e)
+            self.state.is_complete = True
+            return None
+        
+        if not content_buffer:
+            self.state.is_complete = True
+            return ""
+        
+        assistant_message = Message(role="assistant", content=content_buffer)
+        self.state.add_message(assistant_message)
+        self.state.is_complete = True
+        
+        return content_buffer
     
     async def _step(self) -> Optional[dict[str, Any]]:
         """
@@ -185,11 +242,12 @@ class ReActRunner:
     Runner for the ReAct loop with streaming support.
     """
     
-    def __init__(self, config: AgentConfig) -> None:
+    def __init__(self, config: AgentConfig, stream_callback: Any = None) -> None:
         self.config = config
         self.llm_client: Optional[LLMClient] = None
         self.tool_executor = ToolExecutor()
         self.state: Optional[AgentState] = None
+        self.stream_callback = stream_callback
     
     async def run(self, user_input: str) -> str:
         """Run the agent with the given input."""
@@ -198,7 +256,7 @@ class ReActRunner:
         ) as client:
             self.llm_client = client
             self.state = AgentState(config=self.config)
-            loop = ReActLoop(self.state, client, self.tool_executor)
+            loop = ReActLoop(self.state, client, self.tool_executor, self.stream_callback)
             return await loop.run(user_input)
     
     async def run_streaming(self, user_input: str) -> AsyncIterator[str]:

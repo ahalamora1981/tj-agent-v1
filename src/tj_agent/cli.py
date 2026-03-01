@@ -34,7 +34,11 @@ class TerminalClient:
     async def initialize(self) -> bool:
         """Initialize the client and load agent."""
         logger.remove()
-        logger.add(sys.stderr, level=os.getenv("LOG_LEVEL", "WARNING"))
+        logger.add(
+            sys.stderr, 
+            level="WARNING",
+            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        )
         
         await initialize_base_tools()
         
@@ -115,19 +119,25 @@ class TerminalClient:
                     temperature=self.agent.temperature
                 )
                 
-                self.runner = ReActRunner(config)
+                def stream_callback(chunk: str) -> None:
+                    print(chunk, end="", flush=True)
+                
+                self.runner = ReActRunner(config, stream_callback=stream_callback)
                 
                 if self.runner.state:
                     set_agent_state(self.runner.state)
                 
                 print("\n" + "─" * 60)
+                sys.stdout.flush()
+                print("\n[Answer]: ", end="", flush=True)
+                sys.stdout.flush()
                 
                 response = await self.runner.run(user_input)
                 
+                print()  # newline after streaming
+                
                 await session_mgr.add_message(self.session_id, "assistant", response)
                 
-                print("\n[Answer]:")
-                print(response)
                 print("-" * 60)
                 
             except KeyboardInterrupt:

@@ -79,7 +79,7 @@ class LLMClient:
         temperature: float = 0.7,
         tools: Optional[list[dict[str, Any]]] = None,
         stream: bool = False
-    ) -> dict[str, Any] | AsyncIterator[dict[str, Any]]:
+    ) -> dict[str, Any] | AsyncIterator[str]:
         """
         Send a chat completion request.
         
@@ -91,7 +91,7 @@ class LLMClient:
             stream: Whether to stream the response
         
         Returns:
-            Response dict or async iterator for streaming
+            Response dict (if stream=False) or async iterator of content chunks (if stream=True)
         """
         if not self._client:
             raise RuntimeError("LLMClient must be used as async context manager")
@@ -104,7 +104,7 @@ class LLMClient:
         url = f"{self.base_url}{endpoint}"
         
         if stream:
-            return self._stream_request(url, payload)
+            return self._stream_request(url, payload)  # type: ignore[return-value]
         
         assert self._client is not None
         
@@ -118,6 +118,33 @@ class LLMClient:
         
         response.raise_for_status()
         return self._parse_response(response.json(), stream=False)
+    
+    async def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+        tools: Optional[list[dict[str, Any]]] = None
+    ) -> AsyncIterator[str]:
+        """
+        Send a streaming chat completion request.
+        
+        Yields content chunks as they arrive.
+        """
+        if not self._client:
+            raise RuntimeError("LLMClient must be used as async context manager")
+        
+        model = model or self.default_model
+        
+        payload = self._build_payload(model, temperature, messages, tools, stream=True)
+        
+        endpoint = self._get_endpoint()
+        url = f"{self.base_url}{endpoint}"
+        
+        logger.debug(f"LLM Stream Request - URL: {url}")
+        
+        async for content in self._stream_request(url, payload):
+            yield content
     
     def _build_payload(
         self,
@@ -179,8 +206,10 @@ class LLMClient:
         self, 
         url: str, 
         payload: dict[str, Any]
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Handle streaming response."""
+    ) -> AsyncIterator[str]:
+        """Handle streaming response, yields content chunks."""
+        import json
+        
         assert self._client is not None
         async with self._client.stream("POST", url, json=payload) as response:
             response.raise_for_status()
@@ -189,7 +218,23 @@ class LLMClient:
                     data = line[6:]
                     if data == "[DONE]":
                         break
-                    yield {"delta": data}
+                    try:
+                        chunk_data = json.loads(data)
+                        if self.provider == "anthropic":
+                            content = chunk_data.get("content", [])
+                            if content and isinstance(content, list):
+                                for c in content:
+                                    if c.get("type") == "text":
+                                        yield c.get("text", "")
+                        else:
+                            choices = chunk_data.get("choices", [])
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    yield content
+                    except json.JSONDecodeError:
+                        continue
 
 
 class LLMClientManager:
