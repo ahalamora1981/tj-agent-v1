@@ -79,6 +79,8 @@ class ReActLoop:
         
         tool_definitions = self._get_tool_definitions()
         
+        logger.info(f"Calling LLM with {len(messages)} messages, {len(tool_definitions)} tools")
+        
         try:
             response = await self.llm.chat(
                 messages=messages,
@@ -87,6 +89,7 @@ class ReActLoop:
                 tools=tool_definitions if tool_definitions else None,
                 stream=False
             )
+            logger.info(f"LLM response received")
         except Exception as e:
             logger.exception("LLM API call failed")
             self.state.last_error = str(e)
@@ -96,11 +99,18 @@ class ReActLoop:
         response_data = response  # type: ignore[assignment]
         assistant_message = self._parse_response(response_data)  # type: ignore[arg-type]
         
+        logger.info(f"Assistant message: content={assistant_message.content is not None}, tool_calls={assistant_message.tool_calls is not None}")
+        
         if assistant_message.tool_calls:
+            logger.info(f"Executing {len(assistant_message.tool_calls)} tool calls")
             for tool_call in assistant_message.tool_calls:
                 await self._execute_tool(tool_call)
         elif assistant_message.content:
+            logger.info("Setting complete - has content")
             self.state.add_message(assistant_message)
+            self.state.is_complete = True
+        else:
+            logger.warning("No content and no tool calls - ending loop")
             self.state.is_complete = True
         
         return response_data if isinstance(response_data, dict) else None  # type: ignore[return-value]
@@ -123,10 +133,19 @@ class ReActLoop:
     def _get_tool_definitions(self) -> list[dict[str, Any]]:
         """Get all available tool definitions for LLM."""
         definitions = TOOL_REGISTRY.get_definitions()
-        return [d.function for d in definitions if d]
+        result = []
+        for d in definitions:
+            if d:
+                result.append({
+                    "type": d.type,
+                    "function": d.function
+                })
+        return result
     
     def _parse_response(self, response: dict[str, Any]) -> Message:
         """Parse LLM response into a Message object."""
+        import json
+        
         choices = response.get("choices", [])
         if not choices:
             return Message(role="assistant", content="")
@@ -139,14 +158,20 @@ class ReActLoop:
         
         tool_calls = None
         if tool_calls_data:
-            tool_calls = [
-                ToolCall(
+            tool_calls = []
+            for i, tc in enumerate(tool_calls_data):
+                args = tc.get("function", {}).get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args) if args else {}
+                    except json.JSONDecodeError:
+                        args = {}
+                
+                tool_calls.append(ToolCall(
                     id=tc.get("id", f"call_{i}"),
                     name=tc.get("function", {}).get("name", ""),
-                    arguments=tc.get("function", {}).get("arguments", {})
-                )
-                for i, tc in enumerate(tool_calls_data)
-            ]
+                    arguments=args
+                ))
         
         return Message(
             role="assistant",
@@ -164,21 +189,26 @@ class ReActRunner:
         self.config = config
         self.llm_client: Optional[LLMClient] = None
         self.tool_executor = ToolExecutor()
+        self.state: Optional[AgentState] = None
     
     async def run(self, user_input: str) -> str:
         """Run the agent with the given input."""
-        async with LLMClientManager.get_instance() as client:
+        async with LLMClientManager.get_instance(
+            default_model=self.config.model
+        ) as client:
             self.llm_client = client
-            state = AgentState(config=self.config)
-            loop = ReActLoop(state, client, self.tool_executor)
+            self.state = AgentState(config=self.config)
+            loop = ReActLoop(self.state, client, self.tool_executor)
             return await loop.run(user_input)
     
     async def run_streaming(self, user_input: str) -> AsyncIterator[str]:
         """Run the agent with streaming responses."""
-        async with LLMClientManager.get_instance() as client:
+        async with LLMClientManager.get_instance(
+            default_model=self.config.model
+        ) as client:
             self.llm_client = client
-            state = AgentState(config=self.config)
-            loop = ReActLoop(state, client, self.tool_executor)
+            self.state = AgentState(config=self.config)
+            loop = ReActLoop(self.state, client, self.tool_executor)
             
             yield f"Starting agent for: {user_input}\n\n"
             

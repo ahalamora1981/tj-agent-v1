@@ -16,8 +16,9 @@ from .models import (
     ToolRegistry,
     TOOL_REGISTRY,
 )
+from .llm_config import LLMConfig, LLMConfigManager
+from .agents import AgentTemplate, AgentLoader, GlobalAgentLoader
 from .app import app
-from .main import main
 
 __all__ = [
     "Message",
@@ -30,6 +31,10 @@ __all__ = [
     "ToolDefinition",
     "ToolRegistry",
     "TOOL_REGISTRY",
+    "LLMConfig",
+    "LLMConfigManager",
+    "AgentTemplate",
+    "AgentLoader",
+    "GlobalAgentLoader",
     "app",
-    "main",
 ]

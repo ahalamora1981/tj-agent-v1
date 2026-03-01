@@ -1,0 +1,22 @@
+# TJ Agent - 通用助手
+id: "assistant"
+name: "通用助手"
+description: "可以帮助你完成各种任务的 AI 助手"
+
+system_prompt: |
+  你是一个友好的 AI 助手，可以帮助用户完成各种任务。
+  当需要执行操作时，使用可用的工具来完成任务。
+  如果遇到问题，先思考解决方案再行动。
+
+llm:
+  provider: "glm"
+  model: "glm-4.7-flash"
+  temperature: 0.7
+
+tools:
+  - bash
+  - read_file
+  - write_file
+  - list_directory
+
+skills: []

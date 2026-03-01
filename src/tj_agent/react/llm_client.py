@@ -6,38 +6,71 @@ import httpx
 from loguru import logger
 
 from ..models import Message, ToolDefinition, AgentConfig
+from ..llm_config import LLMConfigManager, DEFAULT_PROVIDER
 
 
 class LLMClient:
     """
     Async LLM client for making API calls (OpenAI-compatible).
-    Supports streaming responses.
+    Supports multiple providers: OpenAI, GLM, Qwen, Anthropic, Ollama, Azure.
     """
+    
+    PROVIDER_ENDPOINTS = {
+        "openai": "/chat/completions",
+        "glm": "/chat/completions",
+        "qwen": "/chat/completions",
+        "anthropic": "/v1/messages",
+        "azure": "/openai/deployments/{deployment}/chat/completions",
+        "ollama": "/api/chat",
+    }
     
     def __init__(
         self,
         api_key: Optional[str] = None,
         base_url: str = "https://api.openai.com/v1",
-        default_model: str = "gpt-4o"
+        default_model: str = "gpt-4o",
+        provider: str = "openai"
     ) -> None:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
-        self.base_url = base_url
+        self.base_url = base_url.rstrip("/")
         self.default_model = default_model
+        self.provider = provider
         self._client: Optional[httpx.AsyncClient] = None
     
     async def __aenter__(self) -> "LLMClient":
         self._client = httpx.AsyncClient(
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            },
-            timeout=120.0
+            headers=self._get_headers(),
+            timeout=httpx.Timeout(120.0, connect=30.0)
         )
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         if self._client:
             await self._client.aclose()
+    
+    def _get_headers(self) -> dict[str, str]:
+        """Get request headers based on provider."""
+        headers = {"Content-Type": "application/json"}
+        
+        if self.provider == "anthropic":
+            headers["x-api-key"] = self.api_key
+            headers["anthropic-version"] = "2023-06-01"
+        elif self.provider == "ollama":
+            pass
+        else:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        
+        return headers
+    
+    def _get_endpoint(self) -> str:
+        """Get the API endpoint path for the provider."""
+        endpoint = self.PROVIDER_ENDPOINTS.get(self.provider, "/chat/completions")
+        
+        if self.provider == "azure":
+            deployment = self.default_model
+            endpoint = endpoint.replace("{deployment}", deployment)
+        
+        return endpoint
     
     async def chat(
         self,
@@ -63,27 +96,84 @@ class LLMClient:
         if not self._client:
             raise RuntimeError("LLMClient must be used as async context manager")
         
-        payload: dict[str, Any] = {
-            "model": model or self.default_model,
-            "messages": messages,
-            "temperature": temperature,
-        }
+        model = model or self.default_model
         
-        if tools:
-            payload["tools"] = tools
+        payload: dict[str, Any] = self._build_payload(model, temperature, messages, tools, stream)
         
-        if stream:
-            payload["stream"] = True
-        
-        url = f"{self.base_url}/chat/completions"
+        endpoint = self._get_endpoint()
+        url = f"{self.base_url}{endpoint}"
         
         if stream:
             return self._stream_request(url, payload)
         
         assert self._client is not None
+        
+        logger.debug(f"LLM Request - URL: {url}")
+        logger.debug(f"LLM Request - Payload: {payload}")
+        
         response = await self._client.post(url, json=payload)
+        
+        if response.status_code != 200:
+            logger.error(f"LLM Response - Status: {response.status_code}, Body: {response.text}")
+        
         response.raise_for_status()
-        return response.json()  # type: ignore[return-value]
+        return self._parse_response(response.json(), stream=False)
+    
+    def _build_payload(
+        self,
+        model: str,
+        temperature: float,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]],
+        stream: bool
+    ) -> dict[str, Any]:
+        """Build request payload based on provider."""
+        if self.provider == "anthropic":
+            payload = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": 4096,
+                "temperature": temperature,
+            }
+        elif self.provider == "ollama":
+            payload = {
+                "model": model,
+                "messages": messages,
+                "stream": stream,
+            }
+        else:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+            }
+            if tools:
+                payload["tools"] = tools
+        
+        if stream:
+            payload["stream"] = True
+        
+        return payload
+    
+    def _parse_response(self, response: dict[str, Any], stream: bool = False) -> dict[str, Any]:
+        """Parse response based on provider format."""
+        if self.provider == "anthropic":
+            content = response.get("content", [])
+            if isinstance(content, list) and content:
+                text = "".join([c.get("text", "") for c in content if c.get("type") == "text"])
+            else:
+                text = str(content)
+            
+            return {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": text
+                    }
+                }]
+            }
+        
+        return response
     
     async def _stream_request(
         self, 
@@ -109,15 +199,31 @@ class LLMClientManager:
     
     @classmethod
     def get_instance(
-        cls, 
+        cls,
+        provider: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        default_model: Optional[str] = None
+        default_model: Optional[str] = None,
+        temperature: Optional[float] = None
     ) -> LLMClient:
-        if cls._instance is None:
-            cls._instance = LLMClient(
-                api_key=api_key,
-                base_url=base_url or "https://api.openai.com/v1",
-                default_model=default_model or "gpt-4o"
-            )
+        """Get or create LLM client with config."""
+        config = LLMConfigManager.get_config(
+            provider=provider,
+            api_key=api_key,
+            base_url=base_url,
+            model=default_model,
+            temperature=temperature
+        )
+        
+        cls._instance = LLMClient(
+            api_key=config.api_key,
+            base_url=config.base_url,
+            default_model=config.model,
+            provider=config.provider
+        )
         return cls._instance
+    
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the singleton instance."""
+        cls._instance = None
