@@ -109,8 +109,7 @@ def load_skill_from_path(skill_path: Path) -> Optional[Skill]:
 
 def get_discovery_prompt(skills: list[Skill]) -> str:
     """
-    Generate the discovery prompt - injected into system prompt.
-    Only includes name and description for token efficiency.
+    Generate a discovery prompt for skills.
     
     Args:
         skills: List of discovered skills
@@ -121,11 +120,12 @@ def get_discovery_prompt(skills: list[Skill]) -> str:
     if not skills:
         return ""
     
-    lines = ["## Available Skills", ""]
+    lines = ["<skills>"]
     for skill in skills:
-        lines.append(f"- **{skill.manifest.name}**: {skill.manifest.description}")
-    
-    lines.append("")
-    lines.append("When a task matches a skill's description, use the load_skill_instructions tool to activate it.")
+        lines.append(f"  <skill>")
+        lines.append(f"    <name>{skill.manifest.name}</name>")
+        lines.append(f"    <description>{skill.manifest.description}</description>")
+        lines.append(f"  </skill>")
+    lines.append("</skills>")
     
     return "\n".join(lines)

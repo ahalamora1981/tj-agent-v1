@@ -55,6 +55,7 @@ class Message(BaseModel):
                 }
                 for tc in self.tool_calls
             ]
+        # Include tool_call_id for tool responses
         if self.tool_call_id:
             msg["tool_call_id"] = self.tool_call_id
         if self.name:
@@ -96,6 +97,7 @@ class AgentConfig(BaseModel):
         description="System-level instructions"
     )
     max_iterations: int = Field(default=50, description="Maximum ReAct loop iterations")
+    llm_provider: Optional[str] = Field(default=None, description="LLM provider (glm, qwen, openai, etc.)")
     model: str = Field(default="gpt-4o", description="LLM model to use")
     temperature: float = Field(default=0.7, description="LLM temperature")
     base_tools_enabled: bool = Field(default=True, description="Enable base environment tools")

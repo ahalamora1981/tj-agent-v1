@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 from loguru import logger
 
+from . import _logging  # Configure logger first
 from .models import AgentConfig
 from .react import ReActRunner
 from .agents import GlobalAgentLoader
@@ -33,13 +34,6 @@ class TerminalClient:
     
     async def initialize(self) -> bool:
         """Initialize the client and load agent."""
-        logger.remove()
-        logger.add(
-            sys.stderr, 
-            level="WARNING",
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-        )
-        
         await initialize_base_tools()
         
         agents_dir = os.getenv("AGENTS_DIR", "agents")
@@ -112,11 +106,18 @@ class TerminalClient:
                 
                 await session_mgr.add_message(self.session_id, "user", user_input)
                 
+                skills_loader = GlobalSkillLoader.get_instance()
+                discovery_prompt = skills_loader.get_discovery_prompt()
+                
+                full_system_prompt = self.agent.system_prompt
+                if discovery_prompt:
+                    full_system_prompt += "\n\n" + discovery_prompt
+                
                 config = AgentConfig(
                     session_id=self.session_id,
-                    system_prompt=self.agent.system_prompt,
-                    model=self.agent.model,
-                    temperature=self.agent.temperature
+                    system_prompt=full_system_prompt,
+                    model=os.getenv("MODEL") or "glm-4.7-flash",
+                    temperature=float(os.getenv("TEMPERATURE", "0.7"))
                 )
                 
                 def stream_callback(chunk: str) -> None:
@@ -157,10 +158,12 @@ class TerminalClient:
         """Print the chat header."""
         if not self.agent:
             return
+        from .llm_config import LLMConfigManager
+        config = LLMConfigManager.get_config()
         print(f"""
 ============================================================
   {self.agent.name} ({self.agent_id})
-  Model: {self.agent.model} | Provider: {self.agent.provider}
+  Model: {config.model} | URL: {config.base_url}
 ============================================================
 """)
     
@@ -174,8 +177,8 @@ class TerminalClient:
         config = AgentConfig(
             session_id=session_id,
             system_prompt=self.agent.system_prompt,
-            model=self.agent.model,
-            temperature=self.agent.temperature
+            model=os.getenv("MODEL") or "glm-4.7-flash",
+            temperature=float(os.getenv("TEMPERATURE", "0.7"))
         )
         
         self.runner = ReActRunner(config)

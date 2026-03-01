@@ -8,15 +8,11 @@ system_prompt: |
   当需要执行操作时，使用可用的工具来完成任务。
   如果遇到问题，先思考解决方案再行动。
 
-llm:
-  provider: "glm"
-  model: "glm-4.7-flash"
-  temperature: 0.7
-
 tools:
   - bash
   - read_file
   - write_file
   - list_directory
 
-skills: []
+skills:
+  - file-organizer

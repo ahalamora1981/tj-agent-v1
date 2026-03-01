@@ -50,6 +50,13 @@ class ReActLoop:
         user_message = Message(role="user", content=user_input)
         self.state.add_message(user_message)
         
+        system_prompt = self.state.config.system_prompt
+        if system_prompt:
+            system_message = Message(role="system", content=system_prompt)
+            messages_with_system = [system_message.to_openai_format()] + self.state.get_context_messages()
+        else:
+            messages_with_system = self.state.get_context_messages()
+        
         logger.info(f"Starting ReAct loop for session: {self.state.config.session_id}")
         
         full_response = ""
@@ -58,7 +65,10 @@ class ReActLoop:
             self.state.iteration_count += 1
             logger.debug(f"Iteration {self.state.iteration_count}")
             
-            response = await self._step_streaming()
+            # Get fresh messages including tool results
+            messages_with_system = [system_message.to_openai_format()] + self.state.get_context_messages()
+            
+            response = await self._step_streaming(messages_with_system)
             
             if self.state.is_complete:
                 break
@@ -82,48 +92,69 @@ class ReActLoop:
         
         return full_response
     
-    async def _step_streaming(self) -> Optional[str]:
+    async def _step_streaming(self, messages: list[dict[str, Any]]) -> Optional[str]:
         """
-        Execute one step of the ReAct loop with streaming.
+        Execute one step with streaming response.
+        
+        Args:
+            messages: List of message dicts to send to LLM
         
         Returns:
             Full assistant response content or None
         """
-        messages = self.state.get_context_messages()
-        
         tool_definitions = self._get_tool_definitions()
         
         logger.info(f"Calling LLM with {len(messages)} messages, {len(tool_definitions)} tools")
         
         try:
-            content_buffer = ""
-            async for chunk in self.llm.chat_stream(
+            # Use non-streaming to get tool_calls properly
+            logger.info(f"Sending messages: {len(messages)}")
+            for i, msg in enumerate(messages):
+                content = msg.get('content', '')[:500] if msg.get('content') else ''
+                logger.info(f"Msg {i}: role={msg['role']}, content={content}")
+            
+            response = await self.llm.chat(
                 messages=messages,
                 model=self.state.config.model,
                 temperature=self.state.config.temperature,
-                tools=tool_definitions if tool_definitions else None
-            ):
-                content_buffer += chunk
-                if self.stream_callback:
-                    self.stream_callback(chunk)
+                tools=tool_definitions if tool_definitions else None,
+                stream=False
+            )
             
-            logger.info(f"LLM response received, length: {len(content_buffer)}")
+            # Parse response like _step does
+            response_dict: dict[str, Any] = response  # type: ignore
+            assistant_message = self._parse_response(response_dict)
             
+            logger.info(f"Assistant message: content={assistant_message.content is not None}, tool_calls={assistant_message.tool_calls is not None}")
+            
+            if assistant_message.tool_calls:
+                logger.info(f"Executing {len(assistant_message.tool_calls)} tool calls")
+                # Add assistant message with tool_calls to state first
+                self.state.add_message(assistant_message)
+                for tool_call in assistant_message.tool_calls:
+                    logger.info(f"Tool call: {tool_call.name} - {tool_call.arguments}")
+                    await self._execute_tool(tool_call)
+                # Continue loop after tool execution
+                self.state.is_complete = False
+                return ""
+            elif assistant_message.content:
+                logger.info("Setting complete - has content")
+                # Stream the content to callback if available
+                if assistant_message.content and self.stream_callback:
+                    self.stream_callback(assistant_message.content)
+                self.state.add_message(assistant_message)
+                self.state.is_complete = True
+                return assistant_message.content
+            else:
+                logger.warning("No content and no tool calls - ending loop")
+                self.state.is_complete = True
+                return ""
+                
         except Exception as e:
             logger.exception("LLM API call failed")
             self.state.last_error = str(e)
             self.state.is_complete = True
             return None
-        
-        if not content_buffer:
-            self.state.is_complete = True
-            return ""
-        
-        assistant_message = Message(role="assistant", content=content_buffer)
-        self.state.add_message(assistant_message)
-        self.state.is_complete = True
-        
-        return content_buffer
     
     async def _step(self) -> Optional[dict[str, Any]]:
         """
@@ -133,6 +164,14 @@ class ReActLoop:
             LLM response dict or None
         """
         messages = self.state.get_context_messages()
+        
+        logger.info(f"Total messages in context: {len(messages)}")
+        for i, msg in enumerate(messages):
+            role = msg.get('role', '')
+            content = str(msg.get('content', ''))[:300] if msg.get('content') else ''
+            tool_call_id = msg.get('tool_call_id', '')
+            tool_calls = str(msg.get('tool_calls', ''))[:100] if msg.get('tool_calls') else ''
+            logger.info(f"Context Msg {i}: role={role}, tool_call_id={tool_call_id}, tool_calls={tool_calls}, content={content}")
         
         tool_definitions = self._get_tool_definitions()
         
@@ -178,12 +217,17 @@ class ReActLoop:
         
         tool_result = await self.executor.execute(tool_call)
         
+        result_content = tool_result.content if not tool_result.is_error else f"Error: {tool_result.error_message}"
+        logger.info(f"Tool result: {result_content[:200]}...")
+        
         result_message = Message(
             role="tool",
-            content=tool_result.content if not tool_result.is_error else f"Error: {tool_result.error_message}",
+            content=result_content,
             tool_call_id=tool_call.id,
             name=tool_call.name
         )
+        
+        logger.info(f"Tool result message created: {result_message}")
         
         self.state.add_message(result_message)
     

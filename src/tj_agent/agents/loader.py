@@ -16,7 +16,6 @@ class AgentTemplate:
         name: str,
         description: str,
         system_prompt: str,
-        llm: dict[str, Any],
         tools: list[str],
         skills: list[str]
     ) -> None:
@@ -24,21 +23,8 @@ class AgentTemplate:
         self.name = name
         self.description = description
         self.system_prompt = system_prompt
-        self.llm = llm
         self.tools = tools
         self.skills = skills
-    
-    @property
-    def provider(self) -> str:
-        return self.llm.get("provider", "openai")
-    
-    @property
-    def model(self) -> str:
-        return self.llm.get("model", "gpt-4o")
-    
-    @property
-    def temperature(self) -> float:
-        return self.llm.get("temperature", 0.7)
     
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,7 +32,6 @@ class AgentTemplate:
             "name": self.name,
             "description": self.description,
             "system_prompt": self.system_prompt,
-            "llm": self.llm,
             "tools": self.tools,
             "skills": self.skills,
         }
@@ -118,7 +103,7 @@ class AgentLoader:
                 logger.warning(f"Empty YAML file: {yaml_path}")
                 return None
             
-            required_fields = ["id", "name", "llm"]
+            required_fields = ["id", "name"]
             for field in required_fields:
                 if field not in data:
                     logger.error(f"Missing required field '{field}' in {yaml_path}")
@@ -129,7 +114,6 @@ class AgentLoader:
                 name=data.get("name", data["id"]),
                 description=data.get("description", ""),
                 system_prompt=data.get("system_prompt", ""),
-                llm=data.get("llm", {}),
                 tools=data.get("tools", []),
                 skills=data.get("skills", [])
             )
@@ -152,8 +136,6 @@ class AgentLoader:
                 "id": agent.id,
                 "name": agent.name,
                 "description": agent.description,
-                "provider": agent.provider,
-                "model": agent.model
             }
             for agent in self._agents.values()
         ]

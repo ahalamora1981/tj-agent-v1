@@ -4,6 +4,8 @@ import asyncio
 import os
 import sys
 import click
+
+from . import _logging  # Configure logger first
 from loguru import logger
 
 

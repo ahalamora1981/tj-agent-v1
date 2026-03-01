@@ -174,8 +174,8 @@ async def run_agent(request: AgentRequest):
     config = AgentConfig(
         session_id=session_id,
         system_prompt=agent.system_prompt,
-        model=agent.model,
-        temperature=request.temperature or agent.temperature
+        model=os.getenv("MODEL") or "glm-4.7-flash",
+        temperature=float(os.getenv("TEMPERATURE", "0.7"))
     )
     
     runner = ReActRunner(config)
@@ -213,8 +213,8 @@ async def run_agent_stream(request: AgentRequest):
     config = AgentConfig(
         session_id=session_id,
         system_prompt=agent.system_prompt,
-        model=agent.model,
-        temperature=request.temperature or agent.temperature
+        model=os.getenv("MODEL") or "glm-4.7-flash",
+        temperature=float(os.getenv("TEMPERATURE", "0.7"))
     )
     
     runner = ReActRunner(config)
