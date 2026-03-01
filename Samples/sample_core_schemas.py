@@ -19,4 +19,4 @@ class AgentState(BaseModel):
     """维护整个 ReAct 循环的状态"""
     session_id: str
     messages: List[Message] = Field(default_factory=list)
-    active_skills: List[str] = Field(default_factory=list, description="当前已激活(加载完全文)的 Skills")
+    active_skills: List[str] = Field(default_factory=list, description="当前已激活(加载完全文)的 Skills") 
